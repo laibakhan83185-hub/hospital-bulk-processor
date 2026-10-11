@@ -154,7 +154,7 @@ The level is set with the `LOG_LEVEL` environment variable (default `INFO`). `LO
 python -m pytest -v
 ```
 
-The external API is mocked. Tests cover CSV validation, partial failures, failed activation, retries and duplicate handling, the backoff rules, background mode and progress updates.
+The external API is mocked. Tests cover CSV validation, partial failures, failed activation, retries and duplicate handling, the backoff rules, background mode and progress updates, the request/response models, and configuration.
 
 ## Code style
 
@@ -177,6 +177,7 @@ ruff format .
 app/
   main.py                      endpoints
   schemas.py                   request and response models
+  config.py                    settings from environment variables
   logging_config.py            logging setup
   services/hospital_service.py batch processing, retries, external API calls
   services/batch_store.py      in-memory batch storage
