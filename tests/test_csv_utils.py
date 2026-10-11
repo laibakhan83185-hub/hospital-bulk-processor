@@ -72,7 +72,7 @@ def test_headers_are_normalized():
 
     assert errors == []
     assert hospitals == [
-        {"name": "City Hospital", "address": "MG Road", "phone": ""}
+        {"name": "City Hospital", "address": "MG Road", "phone": None}
     ]
 
 

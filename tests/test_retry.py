@@ -113,3 +113,13 @@ def test_warm_up_ignores_failures():
     asyncio.run(warm_up(client, "batch-1"))
 
     assert client.get.call_count == MAX_ATTEMPTS
+
+
+def test_retry_attempts_are_logged_as_warnings(caplog):
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=[error_response(503), ok_response()])
+
+    with caplog.at_level("WARNING", logger="app.services.hospital_service"):
+        run(client, "post", idempotent=False)
+
+    assert "failed (attempt 1/3), retrying" in caplog.text

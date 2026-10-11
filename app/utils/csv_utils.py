@@ -1,14 +1,15 @@
 import csv
 import io
-import re
 
 from fastapi import HTTPException
+from pydantic import ValidationError
+
+from app.schemas import HospitalRow
 
 
 MAX_HOSPITALS = 20
 REQUIRED_COLUMNS = {"name", "address"}
 ALLOWED_COLUMNS = {"name", "address", "phone"}
-PHONE_PATTERN = re.compile(r"^[0-9+\-() .]{3,30}$")
 
 
 def hospital_key(row: dict) -> tuple[str, str]:
@@ -94,21 +95,15 @@ def check_hospitals_csv(contents: bytes) -> tuple[list[dict], list[dict]]:
             for i, column in enumerate(columns)
         }
 
-        row_is_valid = True
+        try:
+            hospital = HospitalRow(**row)
+        except ValidationError as exc:
+            hospital = None
+            for error in exc.errors():
+                errors.append(row_error(line, error["msg"]))
 
-        if not row["name"]:
-            errors.append(row_error(line, "Hospital name is missing"))
-            row_is_valid = False
-
-        if not row["address"]:
-            errors.append(row_error(line, "Hospital address is missing"))
-            row_is_valid = False
-
-        phone = row.get("phone", "")
-        if phone and not PHONE_PATTERN.match(phone):
-            errors.append(row_error(line, f"Invalid phone number: {phone}"))
-            row_is_valid = False
-
+        # Duplicates are checked on the raw values, so a row with a bad phone
+        # can still be reported as a duplicate in the same pass.
         if row["name"] and row["address"]:
             key = hospital_key(row)
             if key in seen:
@@ -118,18 +113,12 @@ def check_hospitals_csv(contents: bytes) -> tuple[list[dict], list[dict]]:
                         f"Duplicate hospital found (same as row {seen[key]})",
                     )
                 )
-                row_is_valid = False
+                hospital = None
             else:
                 seen[key] = line
 
-        if row_is_valid:
-            hospitals.append(
-                {
-                    "name": row["name"],
-                    "address": row["address"],
-                    "phone": phone,
-                }
-            )
+        if hospital is not None:
+            hospitals.append(hospital.model_dump())
 
     if data_rows > MAX_HOSPITALS:
         errors.insert(

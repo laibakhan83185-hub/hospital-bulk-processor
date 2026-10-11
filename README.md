@@ -119,6 +119,20 @@ The external API also sleeps on the free tier, which caused timeouts on the firs
 
 Batch state is kept in memory, which the assignment allows.
 
+## Models
+
+Request and response shapes are Pydantic models in `app/schemas.py`, so they show up with full schemas in `/docs`.
+
+- `HospitalRow` validates each CSV row: strips whitespace, requires name and address, and checks the phone format. The CSV parser collects these errors for every row instead of stopping at the first.
+- `HospitalCreate` is the payload sent to the Hospital Directory API.
+- `BatchResponse`, `HospitalResult` and `ValidationResponse` are the response models. Their model validators check that the data is consistent before it's returned, for example that processed + failed never exceeds the total, a batch with failures is never marked activated, and `valid` matches the error count.
+
+## Logging
+
+Uses Python's `logging` module. Batch start and finish are logged at INFO, retries and unactivated batches at WARNING, and failed hospitals or activations at ERROR. Every line includes the batch ID, so a batch can be followed from start to finish.
+
+The level is set with the `LOG_LEVEL` environment variable (default `INFO`). `LOG_LEVEL=DEBUG` also logs each created hospital and the outgoing HTTP requests.
+
 ## Tests
 
 ```bash
@@ -138,6 +152,8 @@ The external API is mocked. Tests cover CSV validation, partial failures, failed
 ```
 app/
   main.py                      endpoints
+  schemas.py                   request and response models
+  logging_config.py            logging setup
   services/hospital_service.py batch processing, retries, external API calls
   services/batch_store.py      in-memory batch storage
   utils/csv_utils.py           CSV parsing and validation
