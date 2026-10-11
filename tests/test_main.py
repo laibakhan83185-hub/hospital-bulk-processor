@@ -1,4 +1,3 @@
-
 import asyncio
 from unittest.mock import MagicMock, patch
 
@@ -108,8 +107,12 @@ def test_validate_duplicate_csv():
         },
     )
 
-    assert response.status_code == 400
-    assert "Duplicate hospital found" in response.json()["detail"]
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"] == [
+        {"row": 3, "message": "Duplicate hospital found (same as row 2)"}
+    ]
 
 
 def test_validate_does_not_create_hospitals():
@@ -381,3 +384,85 @@ def test_retry_reconciles_existing_hospital_without_duplicate_creation():
             client_instance.post.assert_not_called()
     finally:
         batches.pop(batch_id, None)
+
+
+def test_get_batch_status_not_found():
+    response = client.get("/hospitals/bulk/does-not-exist")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Batch not found"
+
+
+def test_background_mode_returns_immediately_and_status_is_pollable():
+    with patch("app.main.run_batch") as mock_run:
+        response = client.post(
+            "/hospitals/bulk?background=true",
+            files={
+                "file": (
+                    "hospitals.csv",
+                    "name,address\nCity Hospital,MG Road\n",
+                    "text/csv",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "processing"
+    assert body["total_hospitals"] == 1
+    assert body["processed_hospitals"] == 0
+    assert "hospitals_input" not in body
+    mock_run.assert_called_once_with(body["batch_id"])
+
+    status = client.get(f"/hospitals/bulk/{body['batch_id']}")
+    assert status.status_code == 200
+    assert status.json()["status"] == "processing"
+
+
+def test_progress_is_updated_while_processing():
+    from app.services.batch_store import batches
+    from app.services.hospital_service import create_batch, run_batch
+
+    snapshots = []
+
+    async def slow_post(url, json):
+        # Record progress seen by a poller before this request finishes.
+        snapshots.append(batches[json["creation_batch_id"]]["processed_hospitals"])
+        await asyncio.sleep(0.01 * len(snapshots))
+        response = MagicMock()
+        response.json.return_value = {"id": len(snapshots)}
+        return response
+
+    with patch("app.services.hospital_service.httpx.AsyncClient") as mock_client:
+        client_instance = mock_client.return_value.__aenter__.return_value
+        client_instance.post.side_effect = slow_post
+        client_instance.patch.return_value = MagicMock()
+
+        batch_id = create_batch(
+            [
+                {"name": "A", "address": "X"},
+                {"name": "B", "address": "Y"},
+            ]
+        )
+        result = asyncio.run(run_batch(batch_id))
+
+    assert snapshots == [0, 0]
+    assert result["status"] == "completed"
+    assert result["processed_hospitals"] == 2
+    assert result["batch_activated"] is True
+    assert [h["row"] for h in result["hospitals"]] == [1, 2]
+    assert all(h["status"] == "created_and_activated" for h in result["hospitals"])
+
+
+def test_root_points_to_docs():
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.json()["docs"] == "/docs"
+
+
+def test_health_check():
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}

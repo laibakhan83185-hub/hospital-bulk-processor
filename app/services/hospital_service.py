@@ -1,4 +1,3 @@
-
 import asyncio
 import time
 import uuid
@@ -10,23 +9,115 @@ from app.services.batch_store import batches
 
 HOSPITAL_API_URL = "https://hospital-directory.onrender.com"
 
+# The external API runs on Render's free tier and can take up to a minute
+# to wake up, so allow generous timeouts and a few retries with backoff.
+REQUEST_TIMEOUT = httpx.Timeout(60.0, connect=30.0)
+MAX_ATTEMPTS = 3
+RETRY_BASE_DELAY = 1.0  # seconds; doubles after each failed attempt
+
+# Gateway errors and rate limiting mean the request was not processed,
+# so they are safe to retry even for POST.
+SAFE_RETRY_STATUSES = {429, 502, 503, 504}
+
 
 def normalize(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-async def process_hospitals(hospitals: list[dict]) -> dict:
+async def send_with_retry(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    idempotent: bool,
+    **kwargs,
+) -> httpx.Response:
+    """Send a request, retrying transient failures with exponential backoff.
+
+    Non-idempotent requests (POST) are only retried when the request
+    definitely did not reach the server or was rejected before processing
+    (connection errors, 429, 502, 503, 504). Retrying a POST after a read
+    timeout or a 500 could create a duplicate hospital, so those failures
+    are returned to the caller and handled by the reconciling retry endpoint.
+    """
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            response = await getattr(client, method)(url, **kwargs)
+            response.raise_for_status()
+            return response
+
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            retryable = status in SAFE_RETRY_STATUSES or (
+                idempotent and status >= 500
+            )
+            if not retryable or attempt == MAX_ATTEMPTS:
+                raise
+
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+            # The request never reached the server: always safe to retry.
+            if attempt == MAX_ATTEMPTS:
+                raise
+
+        except httpx.TransportError:
+            # Read/write timeouts etc.: the server may have processed it.
+            if not idempotent or attempt == MAX_ATTEMPTS:
+                raise
+
+        await asyncio.sleep(RETRY_BASE_DELAY * 2 ** (attempt - 1))
+
+    raise RuntimeError("unreachable")
+
+
+async def warm_up(client: httpx.AsyncClient, batch_id: str) -> None:
+    """Wake the external API before sending concurrent requests.
+
+    One cheap read absorbs a cold start, so the batch's POST requests
+    don't all time out together. Failures are ignored: the real requests
+    have their own retries.
+    """
+    try:
+        await send_with_retry(
+            client,
+            "get",
+            f"{HOSPITAL_API_URL}/hospitals/batch/{batch_id}",
+            idempotent=True,
+        )
+    except httpx.HTTPError:
+        pass
+
+
+def batch_summary(batch: dict) -> dict:
+    return {k: v for k, v in batch.items() if k != "hospitals_input"}
+
+
+def create_batch(hospitals: list[dict]) -> str:
+    """Register a new batch in the store and return its ID."""
     batch_id = str(uuid.uuid4())
-    start_time = time.perf_counter()
 
     batches[batch_id] = {
         "batch_id": batch_id,
+        "status": "processing",
         "hospitals_input": hospitals,
-        "hospitals": [],
+        "total_hospitals": len(hospitals),
+        "processed_hospitals": 0,
+        "failed_hospitals": 0,
+        "processing_time_seconds": 0,
         "batch_activated": False,
+        "hospitals": [],
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    return batch_id
+
+
+async def run_batch(batch_id: str) -> dict:
+    """Create all hospitals of a batch, updating progress live."""
+    batch = batches[batch_id]
+    hospitals = batch["hospitals_input"]
+    start_time = time.perf_counter()
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        await warm_up(client, batch_id)
 
         async def create_hospital(index: int, row: dict) -> dict:
             hospital = {
@@ -37,27 +128,38 @@ async def process_hospitals(hospitals: list[dict]) -> dict:
             }
 
             try:
-                response = await client.post(
+                response = await send_with_retry(
+                    client,
+                    "post",
                     f"{HOSPITAL_API_URL}/hospitals/",
+                    idempotent=False,
                     json=hospital,
                 )
-                response.raise_for_status()
                 data = response.json()
 
-                return {
+                result = {
                     "row": index,
                     "hospital_id": data.get("id"),
                     "name": hospital["name"],
                     "status": "created",
                 }
+                batch["processed_hospitals"] += 1
 
             except (httpx.HTTPError, ValueError) as exc:
-                return {
+                result = {
                     "row": index,
                     "name": hospital["name"],
                     "status": "failed",
                     "error": str(exc),
                 }
+                batch["failed_hospitals"] += 1
+
+            # Publish progress as soon as each hospital finishes.
+            batch["hospitals"].append(result)
+            batch["processing_time_seconds"] = round(
+                time.perf_counter() - start_time, 2
+            )
+            return result
 
         results = await asyncio.gather(
             *[
@@ -66,46 +168,39 @@ async def process_hospitals(hospitals: list[dict]) -> dict:
             ]
         )
 
-        failed_count = sum(
-            result["status"] == "failed" for result in results
-        )
+        # Keep final results in CSV row order.
+        batch["hospitals"] = list(results)
 
-        batch_activated = False
-        activation_error = None
-
-        if failed_count == 0:
+        if batch["failed_hospitals"] == 0:
+            batch["status"] = "activating"
             try:
-                response = await client.patch(
+                await send_with_retry(
+                    client,
+                    "patch",
                     f"{HOSPITAL_API_URL}/hospitals/batch/"
-                    f"{batch_id}/activate"
+                    f"{batch_id}/activate",
+                    idempotent=True,
                 )
-                response.raise_for_status()
-                batch_activated = True
+                batch["batch_activated"] = True
 
                 for result in results:
                     result["status"] = "created_and_activated"
 
             except httpx.HTTPError as exc:
-                activation_error = str(exc)
+                batch["activation_error"] = str(exc)
 
-    summary = {
-        "batch_id": batch_id,
-        "total_hospitals": len(hospitals),
-        "processed_hospitals": len(hospitals) - failed_count,
-        "failed_hospitals": failed_count,
-        "processing_time_seconds": round(
-            time.perf_counter() - start_time, 2
-        ),
-        "batch_activated": batch_activated,
-        "hospitals": results,
-    }
+    batch["processing_time_seconds"] = round(
+        time.perf_counter() - start_time, 2
+    )
+    batch["status"] = "completed" if batch["batch_activated"] else "failed"
 
-    if activation_error:
-        summary["activation_error"] = activation_error
+    return batch_summary(batch)
 
-    batches[batch_id].update(summary)
 
-    return summary
+async def process_hospitals(hospitals: list[dict]) -> dict:
+    """Create a batch and process it, waiting for the full result."""
+    batch_id = create_batch(hospitals)
+    return await run_batch(batch_id)
 
 
 async def retry_failed_hospitals(batch_id: str) -> dict:
@@ -127,16 +222,18 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
     if not failed_results and "activation_error" not in batch:
         return {"error": "No failed hospitals to retry"}
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         if failed_results:
             # Reconcile with the external API before retrying POSTs.
             # This reduces duplicate risk if a previous POST succeeded
             # remotely but our service did not receive its response.
             try:
-                response = await client.get(
-                    f"{HOSPITAL_API_URL}/hospitals/batch/{batch_id}"
+                response = await send_with_retry(
+                    client,
+                    "get",
+                    f"{HOSPITAL_API_URL}/hospitals/batch/{batch_id}",
+                    idempotent=True,
                 )
-                response.raise_for_status()
                 existing_hospitals = response.json()
 
                 if not isinstance(existing_hospitals, list):
@@ -185,11 +282,13 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
                 }
 
                 try:
-                    response = await client.post(
+                    response = await send_with_retry(
+                        client,
+                        "post",
                         f"{HOSPITAL_API_URL}/hospitals/",
+                        idempotent=False,
                         json=hospital,
                     )
-                    response.raise_for_status()
                     data = response.json()
 
                     result["hospital_id"] = data.get("id")
@@ -211,11 +310,13 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
 
         if failed_count == 0:
             try:
-                response = await client.patch(
+                await send_with_retry(
+                    client,
+                    "patch",
                     f"{HOSPITAL_API_URL}/hospitals/batch/"
-                    f"{batch_id}/activate"
+                    f"{batch_id}/activate",
+                    idempotent=True,
                 )
-                response.raise_for_status()
 
                 batch["batch_activated"] = True
                 batch.pop("activation_error", None)
@@ -227,4 +328,8 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
                 batch["batch_activated"] = False
                 batch["activation_error"] = str(exc)
 
-    return batch
+    batch["status"] = (
+        "completed" if batch["batch_activated"] else "failed"
+    )
+
+    return batch_summary(batch)
