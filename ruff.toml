@@ -1,0 +1,10 @@
+line-length = 88
+target-version = "py313"
+
+[lint]
+# E/W: pycodestyle, F: pyflakes, I: import sorting, B: bugbear, UP: pyupgrade
+select = ["E", "W", "F", "I", "B", "UP"]
+
+[lint.per-file-ignores]
+# FastAPI's File(...) / Query(...) defaults are the intended usage.
+"app/main.py" = ["B008"]

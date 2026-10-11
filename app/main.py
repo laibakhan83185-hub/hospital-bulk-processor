@@ -22,11 +22,10 @@ from app.services.hospital_service import (
     batch_summary,
     create_batch,
     process_hospitals,
-    run_batch,
     retry_failed_hospitals,
+    run_batch,
 )
 from app.utils.csv_utils import check_hospitals_csv, read_hospitals_csv
-
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -69,7 +68,8 @@ async def validate_hospitals_csv(file: UploadFile = File(...)):
     if errors:
         logger.info(
             "CSV validation failed for %s: %d error(s)",
-            file.filename, len(errors),
+            file.filename,
+            len(errors),
         )
         return {
             "valid": False,
@@ -116,7 +116,9 @@ async def bulk_create_hospitals(
 
     logger.info(
         "Received %s with %d hospitals (background=%s)",
-        file.filename, len(hospitals), background,
+        file.filename,
+        len(hospitals),
+        background,
     )
 
     if background:

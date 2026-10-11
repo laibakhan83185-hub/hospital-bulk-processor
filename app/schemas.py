@@ -4,7 +4,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-
 PHONE_PATTERN = re.compile(r"^[0-9+\-() .]{3,30}$")
 
 HospitalStatus = Literal["created", "created_and_activated", "failed"]
@@ -36,9 +35,7 @@ class HospitalRow(BaseModel):
     @classmethod
     def address_required(cls, value: str) -> str:
         if not value:
-            raise PydanticCustomError(
-                "missing_address", "Hospital address is missing"
-            )
+            raise PydanticCustomError("missing_address", "Hospital address is missing")
         return value
 
     @field_validator("phone")

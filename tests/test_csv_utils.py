@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
-from app.utils.csv_utils import read_hospitals_csv
+from app.utils.csv_utils import check_hospitals_csv, read_hospitals_csv
 
 
 def test_duplicate_hospitals_are_rejected():
@@ -44,9 +44,6 @@ def test_different_hospitals_are_accepted():
     assert len(hospitals) == 2
 
 
-from app.utils.csv_utils import check_hospitals_csv
-
-
 def check(text: str):
     return check_hospitals_csv(text.encode("utf-8"))
 
@@ -71,15 +68,11 @@ def test_headers_are_normalized():
     hospitals, errors = check(" Name , ADDRESS ,Phone\nCity Hospital,MG Road,\n")
 
     assert errors == []
-    assert hospitals == [
-        {"name": "City Hospital", "address": "MG Road", "phone": None}
-    ]
+    assert hospitals == [{"name": "City Hospital", "address": "MG Road", "phone": None}]
 
 
 def test_blank_and_comma_only_lines_are_skipped():
-    hospitals, errors = check(
-        "name,address\nA,X\n\n,\n , \nB,Y\n"
-    )
+    hospitals, errors = check("name,address\nA,X\n\n,\n , \nB,Y\n")
 
     assert errors == []
     assert [h["name"] for h in hospitals] == ["A", "B"]
@@ -127,10 +120,7 @@ def test_missing_required_column_names_the_column():
     assert errors == [
         {
             "row": None,
-            "message": (
-                "CSV must contain name and address columns "
-                "(missing: address)"
-            ),
+            "message": ("CSV must contain name and address columns (missing: address)"),
         }
     ]
 

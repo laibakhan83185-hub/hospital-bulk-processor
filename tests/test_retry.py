@@ -6,7 +6,6 @@ import pytest
 
 from app.services.hospital_service import MAX_ATTEMPTS, send_with_retry
 
-
 URL = "https://example.com/hospitals/"
 
 
@@ -27,9 +26,7 @@ def error_response(status: int):
 
 
 def run(client, method, idempotent):
-    return asyncio.run(
-        send_with_retry(client, method, URL, idempotent=idempotent)
-    )
+    return asyncio.run(send_with_retry(client, method, URL, idempotent=idempotent))
 
 
 def test_post_retries_on_gateway_error_then_succeeds():
@@ -84,9 +81,7 @@ def test_post_does_not_retry_client_error():
 
 def test_patch_retries_read_timeout_because_it_is_idempotent():
     client = MagicMock()
-    client.patch = AsyncMock(
-        side_effect=[httpx.ReadTimeout("slow"), ok_response()]
-    )
+    client.patch = AsyncMock(side_effect=[httpx.ReadTimeout("slow"), ok_response()])
 
     run(client, "patch", idempotent=True)
 

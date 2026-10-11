@@ -1,24 +1,27 @@
 import asyncio
+import logging
 import time
 import uuid
 
-import logging
-
 import httpx
 
+from app.config import settings
 from app.schemas import HospitalCreate
 from app.services.batch_store import batches
 
-
-HOSPITAL_API_URL = "https://hospital-directory.onrender.com"
-
 logger = logging.getLogger(__name__)
 
+HOSPITAL_API_URL = settings.hospital_api_url
+
 # The external API runs on Render's free tier and can take up to a minute
-# to wake up, so allow generous timeouts and a few retries with backoff.
-REQUEST_TIMEOUT = httpx.Timeout(60.0, connect=30.0)
-MAX_ATTEMPTS = 3
-RETRY_BASE_DELAY = 1.0  # seconds; doubles after each failed attempt
+# to wake up, so the defaults allow generous timeouts and a few retries
+# with backoff. All of these can be changed with environment variables.
+REQUEST_TIMEOUT = httpx.Timeout(
+    settings.request_timeout_seconds,
+    connect=settings.connect_timeout_seconds,
+)
+MAX_ATTEMPTS = settings.max_attempts
+RETRY_BASE_DELAY = settings.retry_base_delay_seconds  # doubles per attempt
 
 # Gateway errors and rate limiting mean the request was not processed,
 # so they are safe to retry even for POST.
@@ -53,9 +56,7 @@ async def send_with_retry(
 
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            retryable = status in SAFE_RETRY_STATUSES or (
-                idempotent and status >= 500
-            )
+            retryable = status in SAFE_RETRY_STATUSES or (idempotent and status >= 500)
             if not retryable or attempt == MAX_ATTEMPTS:
                 raise
 
@@ -72,7 +73,11 @@ async def send_with_retry(
         delay = RETRY_BASE_DELAY * 2 ** (attempt - 1)
         logger.warning(
             "%s %s failed (attempt %d/%d), retrying in %.1fs",
-            method.upper(), url, attempt, MAX_ATTEMPTS, delay,
+            method.upper(),
+            url,
+            attempt,
+            MAX_ATTEMPTS,
+            delay,
         )
         await asyncio.sleep(delay)
 
@@ -159,7 +164,9 @@ async def run_batch(batch_id: str) -> dict:
                 batch["processed_hospitals"] += 1
                 logger.debug(
                     "Batch %s: row %d created (hospital_id=%s)",
-                    batch_id, index, result["hospital_id"],
+                    batch_id,
+                    index,
+                    result["hospital_id"],
                 )
 
             except (httpx.HTTPError, ValueError) as exc:
@@ -172,7 +179,10 @@ async def run_batch(batch_id: str) -> dict:
                 batch["failed_hospitals"] += 1
                 logger.error(
                     "Batch %s: row %d (%s) failed: %s",
-                    batch_id, index, hospital["name"], exc,
+                    batch_id,
+                    index,
+                    hospital["name"],
+                    exc,
                 )
 
             # Publish progress as soon as each hospital finishes.
@@ -199,8 +209,7 @@ async def run_batch(batch_id: str) -> dict:
                 await send_with_retry(
                     client,
                     "patch",
-                    f"{HOSPITAL_API_URL}/hospitals/batch/"
-                    f"{batch_id}/activate",
+                    f"{HOSPITAL_API_URL}/hospitals/batch/{batch_id}/activate",
                     idempotent=True,
                 )
                 batch["batch_activated"] = True
@@ -212,20 +221,20 @@ async def run_batch(batch_id: str) -> dict:
                 batch["activation_error"] = str(exc)
                 logger.error("Batch %s: activation failed: %s", batch_id, exc)
 
-    batch["processing_time_seconds"] = round(
-        time.perf_counter() - start_time, 2
-    )
+    batch["processing_time_seconds"] = round(time.perf_counter() - start_time, 2)
     batch["status"] = "completed" if batch["batch_activated"] else "failed"
 
     if batch["batch_activated"]:
         logger.info(
             "Batch %s: completed in %.2fs",
-            batch_id, batch["processing_time_seconds"],
+            batch_id,
+            batch["processing_time_seconds"],
         )
     else:
         logger.warning(
             "Batch %s: finished with %d failed hospital(s), not activated",
-            batch_id, batch["failed_hospitals"],
+            batch_id,
+            batch["failed_hospitals"],
         )
 
     return batch_summary(batch)
@@ -247,9 +256,7 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
         return {"error": "Batch is already activated"}
 
     failed_results = [
-        result
-        for result in batch["hospitals"]
-        if result["status"] == "failed"
+        result for result in batch["hospitals"] if result["status"] == "failed"
     ]
 
     # No failed creations? Retry activation only if activation previously failed.
@@ -287,9 +294,9 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
 
             except (httpx.HTTPError, ValueError) as exc:
                 logger.error(
-                    "Batch %s: could not fetch existing hospitals, "
-                    "retry aborted: %s",
-                    batch_id, exc,
+                    "Batch %s: could not fetch existing hospitals, retry aborted: %s",
+                    batch_id,
+                    exc,
                 )
                 return {
                     "error": (
@@ -306,8 +313,7 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
                     (
                         hospital
                         for hospital in existing_hospitals
-                        if normalize(hospital.get("name", ""))
-                        == normalize(row["name"])
+                        if normalize(hospital.get("name", "")) == normalize(row["name"])
                         and normalize(hospital.get("address", ""))
                         == normalize(row["address"])
                     ),
@@ -318,7 +324,9 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
                     logger.info(
                         "Batch %s: row %d already exists in external API "
                         "(hospital_id=%s), skipping re-create",
-                        batch_id, result["row"], existing.get("id"),
+                        batch_id,
+                        result["row"],
+                        existing.get("id"),
                     )
                     result["hospital_id"] = existing.get("id")
                     result["status"] = "created"
@@ -350,26 +358,24 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
                     result["error"] = str(exc)
                     logger.error(
                         "Batch %s: retry of row %d failed again: %s",
-                        batch_id, result["row"], exc,
+                        batch_id,
+                        result["row"],
+                        exc,
                     )
 
         failed_count = sum(
-            result["status"] == "failed"
-            for result in batch["hospitals"]
+            result["status"] == "failed" for result in batch["hospitals"]
         )
 
         batch["failed_hospitals"] = failed_count
-        batch["processed_hospitals"] = (
-            batch["total_hospitals"] - failed_count
-        )
+        batch["processed_hospitals"] = batch["total_hospitals"] - failed_count
 
         if failed_count == 0:
             try:
                 await send_with_retry(
                     client,
                     "patch",
-                    f"{HOSPITAL_API_URL}/hospitals/batch/"
-                    f"{batch_id}/activate",
+                    f"{HOSPITAL_API_URL}/hospitals/batch/{batch_id}/activate",
                     idempotent=True,
                 )
 
@@ -384,8 +390,6 @@ async def retry_failed_hospitals(batch_id: str) -> dict:
                 batch["activation_error"] = str(exc)
                 logger.error("Batch %s: activation failed: %s", batch_id, exc)
 
-    batch["status"] = (
-        "completed" if batch["batch_activated"] else "failed"
-    )
+    batch["status"] = "completed" if batch["batch_activated"] else "failed"
 
     return batch_summary(batch)

@@ -127,6 +127,21 @@ Request and response shapes are Pydantic models in `app/schemas.py`, so they sho
 - `HospitalCreate` is the payload sent to the Hospital Directory API.
 - `BatchResponse`, `HospitalResult` and `ValidationResponse` are the response models. Their model validators check that the data is consistent before it's returned, for example that processed + failed never exceeds the total, a batch with failures is never marked activated, and `valid` matches the error count.
 
+## Configuration
+
+Settings are read from environment variables in `app/config.py`. All of them have defaults, so nothing needs to be set to run the app.
+
+| Variable | Default | |
+|---|---|---|
+| `HOSPITAL_API_URL` | `https://hospital-directory.onrender.com` | Hospital Directory API base URL |
+| `REQUEST_TIMEOUT_SECONDS` | `60` | Timeout for each external request |
+| `CONNECT_TIMEOUT_SECONDS` | `30` | Timeout for opening a connection |
+| `MAX_ATTEMPTS` | `3` | Attempts per request, including the first |
+| `RETRY_BASE_DELAY_SECONDS` | `1` | First retry delay; doubles each time |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
+
+Values are validated on startup, so a typo like `MAX_ATTEMPTS=0` stops the app with a clear error instead of misbehaving later.
+
 ## Logging
 
 Uses Python's `logging` module. Batch start and finish are logged at INFO, retries and unactivated batches at WARNING, and failed hospitals or activations at ERROR. Every line includes the batch ID, so a batch can be followed from start to finish.
@@ -140,6 +155,15 @@ python -m pytest -v
 ```
 
 The external API is mocked. Tests cover CSV validation, partial failures, failed activation, retries and duplicate handling, the backoff rules, background mode and progress updates.
+
+## Code style
+
+Linting and formatting use [ruff](https://docs.astral.sh/ruff/), configured in `ruff.toml`:
+
+```bash
+ruff check .
+ruff format .
+```
 
 ## Limitations
 

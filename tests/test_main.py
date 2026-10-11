@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 
-
 client = TestClient(app)
 
 
@@ -17,9 +16,7 @@ def test_failed_hospital_prevents_batch_activation():
         failed_response = MagicMock()
         failed_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "API error",
-            request=httpx.Request(
-                "POST", "https://example.com/hospitals/"
-            ),
+            request=httpx.Request("POST", "https://example.com/hospitals/"),
             response=httpx.Response(500),
         )
         client_instance.post.return_value = failed_response
@@ -51,9 +48,7 @@ def test_activation_failure_is_reported():
         activation_response = MagicMock()
         activation_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "Activation error",
-            request=httpx.Request(
-                "PATCH", "https://example.com/activate"
-            ),
+            request=httpx.Request("PATCH", "https://example.com/activate"),
             response=httpx.Response(500),
         )
         client_instance.patch.return_value = activation_response
@@ -83,9 +78,7 @@ def test_validate_valid_csv():
 
     response = client.post(
         "/hospitals/bulk/validate",
-        files={
-            "file": ("hospitals.csv", csv_content, "text/csv")
-        },
+        files={"file": ("hospitals.csv", csv_content, "text/csv")},
     )
 
     assert response.status_code == 200
@@ -102,9 +95,7 @@ def test_validate_duplicate_csv():
 
     response = client.post(
         "/hospitals/bulk/validate",
-        files={
-            "file": ("hospitals.csv", csv_content, "text/csv")
-        },
+        files={"file": ("hospitals.csv", csv_content, "text/csv")},
     )
 
     assert response.status_code == 200
@@ -116,33 +107,23 @@ def test_validate_duplicate_csv():
 
 
 def test_validate_does_not_create_hospitals():
-    csv_content = (
-        "name,address,phone\n"
-        "City Hospital,MG Road,9876543210\n"
-    )
+    csv_content = "name,address,phone\nCity Hospital,MG Road,9876543210\n"
 
     response = client.post(
         "/hospitals/bulk/validate",
-        files={
-            "file": ("hospitals.csv", csv_content, "text/csv")
-        },
+        files={"file": ("hospitals.csv", csv_content, "text/csv")},
     )
 
     assert response.status_code == 200
 
 
 def test_validate_never_processes_hospitals():
-    csv_content = (
-        "name,address,phone\n"
-        "City Hospital,MG Road,9876543210\n"
-    )
+    csv_content = "name,address,phone\nCity Hospital,MG Road,9876543210\n"
 
     with patch("app.main.process_hospitals") as mock_process:
         response = client.post(
             "/hospitals/bulk/validate",
-            files={
-                "file": ("hospitals.csv", csv_content, "text/csv")
-            },
+            files={"file": ("hospitals.csv", csv_content, "text/csv")},
         )
 
     assert response.status_code == 200
@@ -150,9 +131,7 @@ def test_validate_never_processes_hospitals():
 
 
 def test_retry_unknown_batch_returns_404():
-    response = client.post(
-        "/hospitals/bulk/unknown-batch/retry"
-    )
+    response = client.post("/hospitals/bulk/unknown-batch/retry")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Batch not found"
@@ -169,9 +148,7 @@ def test_retry_without_failed_hospitals_returns_400():
     }
 
     try:
-        response = client.post(
-            "/hospitals/bulk/test-batch/retry"
-        )
+        response = client.post("/hospitals/bulk/test-batch/retry")
 
         assert response.status_code == 400
         assert response.json()["detail"] == "No failed hospitals to retry"
@@ -209,17 +186,13 @@ def test_retry_successfully_creates_failed_hospital():
     }
 
     try:
-        with patch(
-            "app.services.hospital_service.httpx.AsyncClient"
-        ) as mock_client:
-            client_instance = (
-                mock_client.return_value.__aenter__.return_value
-            )
-            
+        with patch("app.services.hospital_service.httpx.AsyncClient") as mock_client:
+            client_instance = mock_client.return_value.__aenter__.return_value
+
             existing_response = MagicMock()
             existing_response.json.return_value = []
             client_instance.get.return_value = existing_response
-            
+
             created_response = MagicMock()
             created_response.json.return_value = {"id": 123}
             client_instance.post.return_value = created_response
@@ -227,17 +200,12 @@ def test_retry_successfully_creates_failed_hospital():
             activation_response = MagicMock()
             client_instance.patch.return_value = activation_response
 
-            result = asyncio.run(
-                retry_failed_hospitals(batch_id)
-            )
+            result = asyncio.run(retry_failed_hospitals(batch_id))
 
         assert result["failed_hospitals"] == 0
         assert result["batch_activated"] is True
         assert result["hospitals"][0]["hospital_id"] == 123
-        assert (
-            result["hospitals"][0]["status"]
-            == "created_and_activated"
-        )
+        assert result["hospitals"][0]["status"] == "created_and_activated"
 
     finally:
         batches.pop(batch_id, None)
@@ -285,8 +253,8 @@ def test_retry_activation_without_recreating_hospitals():
             client_instance.post.assert_not_called()
     finally:
         batches.pop(batch_id, None)
-        
-        
+
+
 def test_retry_reconciles_existing_hospital_without_duplicate_creation():
     from app.services.batch_store import batches
     from app.services.hospital_service import retry_failed_hospitals

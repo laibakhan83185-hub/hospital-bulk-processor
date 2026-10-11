@@ -1,5 +1,6 @@
 import logging
-import os
+
+from app.config import settings
 
 
 def setup_logging() -> None:
@@ -8,13 +9,11 @@ def setup_logging() -> None:
     The level comes from the LOG_LEVEL environment variable (default INFO).
     Set LOG_LEVEL=DEBUG to see per-hospital details.
     """
-    level = os.getenv("LOG_LEVEL", "INFO").upper()
-
     logging.basicConfig(
-        level=level,
+        level=settings.log_level,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
 
     # httpx logs every request at INFO; keep it quieter unless debugging.
-    if level != "DEBUG":
+    if settings.log_level != "DEBUG":
         logging.getLogger("httpx").setLevel(logging.WARNING)

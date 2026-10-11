@@ -6,7 +6,6 @@ from pydantic import ValidationError
 
 from app.schemas import HospitalRow
 
-
 MAX_HOSPITALS = 20
 REQUIRED_COLUMNS = {"name", "address"}
 ALLOWED_COLUMNS = {"name", "address", "phone"}
@@ -125,8 +124,7 @@ def check_hospitals_csv(contents: bytes) -> tuple[list[dict], list[dict]]:
             0,
             row_error(
                 None,
-                f"Maximum {MAX_HOSPITALS} hospitals allowed "
-                f"(found {data_rows})",
+                f"Maximum {MAX_HOSPITALS} hospitals allowed (found {data_rows})",
             ),
         )
 
