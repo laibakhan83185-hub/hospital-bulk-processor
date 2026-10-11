@@ -14,6 +14,8 @@ class Settings(BaseModel):
     connect_timeout_seconds: float = Field(30.0, gt=0)
     max_attempts: int = Field(3, ge=1)
     retry_base_delay_seconds: float = Field(1.0, ge=0)
+    max_stored_batches: int = Field(1000, ge=1)
+    max_upload_bytes: int = Field(1_000_000, ge=1)
     log_level: str = "INFO"
 
     @field_validator("hospital_api_url")

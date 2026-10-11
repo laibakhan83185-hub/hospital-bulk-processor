@@ -43,20 +43,14 @@ class HospitalRow(BaseModel):
     def valid_phone(cls, value: str | None) -> str | None:
         if not value:
             return None
-        if not PHONE_PATTERN.match(value):
+        digits = sum(char.isdigit() for char in value)
+        if not PHONE_PATTERN.match(value) or digits < 3:
             raise PydanticCustomError(
                 "invalid_phone",
                 "Invalid phone number: {phone}",
                 {"phone": value},
             )
         return value
-
-    def key(self) -> tuple[str, str]:
-        """Normalized name and address, used to detect duplicates."""
-        return (
-            " ".join(self.name.casefold().split()),
-            " ".join(self.address.casefold().split()),
-        )
 
 
 class HospitalCreate(BaseModel):
@@ -98,6 +92,9 @@ class BatchResponse(BaseModel):
     processing_time_seconds: float = Field(ge=0)
     batch_activated: bool
     activation_error: str | None = None
+    error: str | None = Field(
+        None, description="Set if processing stopped because of an unexpected error"
+    )
     hospitals: list[HospitalResult]
 
     @model_validator(mode="after")

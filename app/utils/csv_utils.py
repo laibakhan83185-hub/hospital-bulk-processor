@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.schemas import HospitalRow
+from app.utils.text import normalize
 
 MAX_HOSPITALS = 20
 REQUIRED_COLUMNS = {"name", "address"}
@@ -13,9 +14,7 @@ ALLOWED_COLUMNS = {"name", "address", "phone"}
 
 def hospital_key(row: dict) -> tuple[str, str]:
     """Create a normalized key to identify duplicate hospitals."""
-    name = " ".join(row["name"].casefold().split())
-    address = " ".join(row["address"].casefold().split())
-    return name, address
+    return normalize(row["name"]), normalize(row["address"])
 
 
 def row_error(row: int | None, message: str) -> dict:
@@ -36,7 +35,14 @@ def check_hospitals_csv(contents: bytes) -> tuple[list[dict], list[dict]]:
         return [], [row_error(None, "CSV must use UTF-8 encoding")]
 
     reader = csv.reader(io.StringIO(text))
-    header = next(reader, None)
+
+    # Read everything up front so malformed CSV (for example a field over
+    # Python's csv size limit) becomes a normal validation error, not a 500.
+    try:
+        header = next(reader, None)
+        records = [(reader.line_num, values) for values in reader]
+    except csv.Error as exc:
+        return [], [row_error(reader.line_num or None, f"Could not parse CSV: {exc}")]
 
     if header is None:
         return [], [row_error(None, "CSV file is empty")]
@@ -70,9 +76,7 @@ def check_hospitals_csv(contents: bytes) -> tuple[list[dict], list[dict]]:
     data_rows = 0
     seen: dict[tuple[str, str], int] = {}
 
-    for values in reader:
-        line = reader.line_num
-
+    for line, values in records:
         # Skip blank lines, including ones that only contain commas.
         if not any(value.strip() for value in values):
             continue
@@ -117,7 +121,7 @@ def check_hospitals_csv(contents: bytes) -> tuple[list[dict], list[dict]]:
                 seen[key] = line
 
         if hospital is not None:
-            hospitals.append(hospital.model_dump())
+            hospitals.append({"row": line, **hospital.model_dump()})
 
     if data_rows > MAX_HOSPITALS:
         errors.insert(

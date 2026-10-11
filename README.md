@@ -15,7 +15,7 @@ git clone https://github.com/laibakhan83185-hub/hospital-bulk-processor.git
 cd hospital-bulk-processor
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # or requirements.txt to run without tests/linting
 uvicorn app.main:app --reload
 ```
 
@@ -66,15 +66,17 @@ Response from the live deployment:
   "processing_time_seconds": 27.67,
   "batch_activated": true,
   "hospitals": [
-    {"row": 1, "hospital_id": 1, "name": "Test Hospital A", "status": "created_and_activated"},
-    {"row": 2, "hospital_id": 2, "name": "Test Hospital B", "status": "created_and_activated"}
+    {"row": 2, "hospital_id": 1, "name": "Test Hospital A", "status": "created_and_activated"},
+    {"row": 3, "hospital_id": 2, "name": "Test Hospital B", "status": "created_and_activated"}
   ]
 }
 ```
 
 (Most of those 27 seconds was the external API waking up. When it's already running a batch takes a couple of seconds.)
 
-If the CSV is invalid you get a 400 listing all the problems in the file.
+`row` is the line number in the CSV file (the header is line 1), the same numbering `/validate` uses. If a row fails, its `error` says what went wrong in short form (for example `Hospital Directory API returned HTTP 422`); the full details go to the logs.
+
+If the CSV is invalid you get a 400 listing all the problems in the file. Files over 1 MB get a 413.
 
 Add `?background=true` to get the batch ID back right away and let processing continue in the background. You can then poll the status endpoint below.
 
@@ -84,7 +86,9 @@ Current state of a batch. Counts and per-row results update as each hospital fin
 
 ### POST /hospitals/bulk/{batch_id}/retry
 
-Retries the failed rows of a batch, or just the activation if that was what failed. Before re-sending a hospital it checks whether the external API already has it in the batch, since a request can succeed on their side even if the response never reached us. That avoids creating duplicates.
+Retries the failed rows of a batch, or just the activation if that was what failed. Before re-sending a hospital it checks whether the external API already has it in the batch, since a request can succeed on their side even if the response never reached us. That avoids creating duplicates. Failed rows are retried in parallel.
+
+Only one piece of work runs on a batch at a time. A retry while the batch is still processing, or while another retry is running, gets a `409`. Without this, a retry could activate a batch before all its hospitals exist, or two retries could both re-create the same row.
 
 ### POST /hospitals/bulk/validate
 
@@ -117,7 +121,9 @@ The external API also sleeps on the free tier, which caused timeouts on the firs
 
 `POST /hospitals/bulk` waits for the full result by default, to match the response format in the assignment. Background mode is opt-in.
 
-Batch state is kept in memory, which the assignment allows.
+If something unexpected goes wrong (for example the external API returns a response in an unexpected shape), the affected row or batch is marked `failed` with an error message instead of being left in `processing`, so it can always be retried.
+
+Batch state is kept in memory, which the assignment allows. The store keeps at most 1,000 batches; when it's full, the oldest finished batches are removed.
 
 ## Models
 
@@ -138,6 +144,8 @@ Settings are read from environment variables in `app/config.py`. All of them hav
 | `CONNECT_TIMEOUT_SECONDS` | `30` | Timeout for opening a connection |
 | `MAX_ATTEMPTS` | `3` | Attempts per request, including the first |
 | `RETRY_BASE_DELAY_SECONDS` | `1` | First retry delay; doubles each time |
+| `MAX_STORED_BATCHES` | `1000` | Batches kept in memory before old finished ones are removed |
+| `MAX_UPLOAD_BYTES` | `1000000` | Largest CSV upload accepted |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
 
 Values are validated on startup, so a typo like `MAX_ATTEMPTS=0` stops the app with a clear error instead of misbehaving later.
@@ -154,7 +162,7 @@ The level is set with the `LOG_LEVEL` environment variable (default `INFO`). `LO
 python -m pytest -v
 ```
 
-The external API is mocked. Tests cover CSV validation, partial failures, failed activation, retries and duplicate handling, the backoff rules, background mode and progress updates, the request/response models, and configuration.
+The external API is mocked. Tests cover CSV validation, partial failures, failed activation, retries and duplicate handling, the backoff rules, background mode and progress updates, the request/response models, configuration, and regression tests for concurrent retries, stuck batches, oversized input and error messages.
 
 ## Code style
 
@@ -167,7 +175,7 @@ ruff format .
 
 ## Limitations
 
-- Batches are stored in memory, so they're lost on restart, including any that were still running in the background.
+- Batches are stored in memory, so they're lost on restart, including any that were still running in the background. The in-memory store and the "one job per batch" check only work within a single process, so the app must run with one worker. Running several instances would need a shared store (e.g. Redis or Postgres) and a shared lock.
 - The retry check matches hospitals by name and address. It makes duplicates much less likely but can't fully guarantee exactly-once creation.
 - Everything depends on the external API being available.
 
@@ -182,6 +190,7 @@ app/
   services/hospital_service.py batch processing, retries, external API calls
   services/batch_store.py      in-memory batch storage
   utils/csv_utils.py           CSV parsing and validation
+  utils/text.py                shared name/address normalization
 tests/
 ```
 

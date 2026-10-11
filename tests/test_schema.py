@@ -47,13 +47,6 @@ def test_hospital_row_reports_each_problem():
     ]
 
 
-def test_hospital_row_key_ignores_case_and_spaces():
-    a = HospitalRow(name="City  Hospital", address="MG Road")
-    b = HospitalRow(name="city hospital", address="mg   road")
-
-    assert a.key() == b.key()
-
-
 def test_hospital_create_payload_shape():
     payload = HospitalCreate(name="A", address="X", creation_batch_id="b1")
 

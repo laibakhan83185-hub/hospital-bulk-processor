@@ -311,47 +311,6 @@ def test_retry_reconciles_existing_hospital_without_duplicate_creation():
             client_instance.post.assert_not_called()
     finally:
         batches.pop(batch_id, None)
-    from app.services.batch_store import batches
-    from app.services.hospital_service import retry_failed_hospitals
-
-    batch_id = "activation-retry-test"
-
-    batches[batch_id] = {
-        "batch_id": batch_id,
-        "hospitals_input": [
-            {"name": "City Hospital", "address": "MG Road", "phone": ""}
-        ],
-        "hospitals": [
-            {
-                "row": 1,
-                "hospital_id": 123,
-                "name": "City Hospital",
-                "status": "created",
-            }
-        ],
-        "total_hospitals": 1,
-        "processed_hospitals": 1,
-        "failed_hospitals": 0,
-        "batch_activated": False,
-        "activation_error": "Previous activation failed",
-    }
-
-    try:
-        with patch("app.services.hospital_service.httpx.AsyncClient") as mock_client:
-            client_instance = mock_client.return_value.__aenter__.return_value
-
-            activation_response = MagicMock()
-            activation_response.raise_for_status.return_value = None
-            client_instance.patch.return_value = activation_response
-
-            result = asyncio.run(retry_failed_hospitals(batch_id))
-
-            assert result["batch_activated"] is True
-            assert "activation_error" not in result
-            client_instance.patch.assert_called_once()
-            client_instance.post.assert_not_called()
-    finally:
-        batches.pop(batch_id, None)
 
 
 def test_get_batch_status_not_found():

@@ -68,7 +68,9 @@ def test_headers_are_normalized():
     hospitals, errors = check(" Name , ADDRESS ,Phone\nCity Hospital,MG Road,\n")
 
     assert errors == []
-    assert hospitals == [{"name": "City Hospital", "address": "MG Road", "phone": None}]
+    assert hospitals == [
+        {"row": 2, "name": "City Hospital", "address": "MG Road", "phone": None}
+    ]
 
 
 def test_blank_and_comma_only_lines_are_skipped():
